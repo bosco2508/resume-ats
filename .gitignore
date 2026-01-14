@@ -1,0 +1,12 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+
+# Secrets
+.env
+firebase_key.json
+
+# OS
+.DS_Store
+*.zip

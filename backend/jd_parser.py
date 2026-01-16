@@ -8,11 +8,6 @@ MODEL_NAME = "models/gemini-flash-latest"
 
 
 def extract_jd_attributes(jd_description: str) -> dict:
-    """
-    Extract ONLY explicit JD requirements.
-    Inferred skills are marked as nice-to-have and never used for rejection.
-    """
-
     if not jd_description or not jd_description.strip():
         return {
             "explicit_requirements": [],
@@ -23,9 +18,9 @@ def extract_jd_attributes(jd_description: str) -> dict:
 Extract requirements from the Job Description.
 
 RULES:
-- ONLY include skills/tools/tasks that are EXPLICITLY mentioned in the JD
-- If a skill is implied but NOT written, put it under nice_to_have
-- DO NOT invent enterprise buzzwords
+- ONLY include items EXPLICITLY mentioned in the JD under explicit_requirements
+- If something is implied but NOT written, put it under nice_to_have
+- DO NOT invent buzzwords
 - DO NOT generalize
 
 JD:

@@ -54,33 +54,33 @@ def clear_session(session_id):
     db.collection(COLLECTION_NAME).document(session_id).delete()
 """
 
-from google.cloud import firestore
 import uuid
 from datetime import datetime
+from google.cloud import firestore
+from backend.embeddings import get_embedding
 
-# Cloud Run uses default service account
 db = firestore.Client(database="resume")
-
 COLLECTION_NAME = "resume_sessions"
+
 
 def create_session(jd, weights):
     session_id = str(uuid.uuid4())
+
+    explicit_reqs = jd["derived_attributes"].get(
+        "explicit_requirements", []
+    )
+
+    jd_embeddings = {
+        req: get_embedding(req)
+        for req in explicit_reqs
+    }
+
     db.collection(COLLECTION_NAME).document(session_id).set({
         "jd": jd,
+        "jd_embeddings": jd_embeddings,
         "weights": weights,
         "results": [],
         "created_at": datetime.utcnow().isoformat()
     })
+
     return session_id
-
-def append_result(session_id, result):
-    db.collection(COLLECTION_NAME).document(session_id).update({
-        "results": firestore.ArrayUnion([result])
-    })
-
-def get_session(session_id):
-    doc = db.collection(COLLECTION_NAME).document(session_id).get()
-    return doc.to_dict() if doc.exists else None
-
-def clear_session(session_id):
-    db.collection(COLLECTION_NAME).document(session_id).delete()

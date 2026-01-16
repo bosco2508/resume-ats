@@ -1,5 +1,4 @@
 import streamlit as st
-
 # -------------------------
 # Backend imports
 # -------------------------
@@ -142,8 +141,12 @@ if resume and st.button("Process Resume"):
             jd_data = session_data["jd"]
             derived_attrs = jd_data["derived_attributes"]
 
+            explicit_requirements = derived_attrs.get(
+                "explicit_requirements", []
+            )
+
             # -------------------------
-            # Experience (Soft Evaluation)
+            # Experience (Soft Rule)
             # -------------------------
             total_exp = calculate_experience(resume_text)
             experience_gap_reason = None
@@ -191,7 +194,7 @@ if resume and st.button("Process Resume"):
             )
 
             # -------------------------
-            # Rejection Reasons
+            # Rejection Reasons (EXPLICIT ONLY)
             # -------------------------
             rejection_reasons = []
 
@@ -208,21 +211,27 @@ if resume and st.button("Process Resume"):
                     "Low alignment with job responsibilities"
                 )
 
-            for item in jd_missing[:3]:
+            explicit_missing = [
+                item for item in jd_missing
+                if item in explicit_requirements
+            ]
+
+            for item in explicit_missing[:3]:
                 rejection_reasons.append(
-                    f"Missing JD expectation: {item}"
+                    f"Missing explicit JD requirement: {item}"
                 )
 
-            rejection_reasons.extend(llm_eval.get("rejection_reasons", []))
+            rejection_reasons.extend(
+                llm_eval.get("rejection_reasons", [])
+            )
 
             # -------------------------
-            # Final Result Object (JSON)
+            # Final Result (JSON)
             # -------------------------
             result = {
                 "candidate_name": candidate_name,
                 "experience_years": total_exp,
                 "experience_required": jd_data["min_exp"],
-                "experience_score_component": total_exp,
                 "skill_match_pct": skill_pct,
                 "jd_alignment_pct": jd_match_pct,
                 "project_relevance_score": llm_eval["project_relevance_score"],

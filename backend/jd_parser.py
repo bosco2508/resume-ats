@@ -3,76 +3,60 @@ import json
 import os
 import re
 
-# -----------------------------
-# Gemini Client
-# -----------------------------
 client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
-
-# Use a model that EXISTS for your project
 MODEL_NAME = "models/gemini-flash-latest"
 
 
 def extract_jd_attributes(jd_description: str) -> dict:
     """
-    Extract additional requirements from JD description.
-    Always returns a valid dict.
+    Extract ONLY explicit JD requirements.
+    Inferred skills are marked as nice-to-have and never used for rejection.
     """
 
     if not jd_description or not jd_description.strip():
-        return _empty_jd_attrs()
+        return {
+            "explicit_requirements": [],
+            "nice_to_have": []
+        }
 
     prompt = f"""
-You MUST respond with ONLY valid JSON.
-NO explanations. NO markdown. NO text outside JSON.
+Extract requirements from the Job Description.
 
-Job Description:
+RULES:
+- ONLY include skills/tools/tasks that are EXPLICITLY mentioned in the JD
+- If a skill is implied but NOT written, put it under nice_to_have
+- DO NOT invent enterprise buzzwords
+- DO NOT generalize
+
+JD:
 {jd_description}
 
-JSON format:
+Return ONLY valid JSON:
 {{
-  "additional_skills": ["string"],
-  "tools": ["string"],
-  "soft_skills": ["string"],
-  "keywords": ["string"]
+  "explicit_requirements": ["string"],
+  "nice_to_have": ["string"]
 }}
 """
 
-    try:
-        response = client.models.generate_content(
-            model=MODEL_NAME,
-            contents=prompt
-        )
-        return _safe_json_parse(response.text, fallback=_empty_jd_attrs())
+    response = client.models.generate_content(
+        model=MODEL_NAME,
+        contents=prompt
+    )
 
-    except Exception:
-        return _empty_jd_attrs()
+    return _safe_json_parse(response.text)
 
 
-# -----------------------------
-# Helpers
-# -----------------------------
-def _safe_json_parse(text: str, fallback: dict) -> dict:
-    if not text or not text.strip():
-        return fallback
+def _safe_json_parse(text: str) -> dict:
+    if not text:
+        return {"explicit_requirements": [], "nice_to_have": []}
 
-    # Remove markdown fences if present
-    cleaned = re.sub(r"```(?:json)?|```", "", text, flags=re.IGNORECASE).strip()
+    text = re.sub(r"```(?:json)?|```", "", text, flags=re.IGNORECASE).strip()
+    match = re.search(r"\{.*\}", text, re.DOTALL)
 
-    # Extract first JSON object
-    match = re.search(r"\{.*\}", cleaned, re.DOTALL)
     if not match:
-        return fallback
+        return {"explicit_requirements": [], "nice_to_have": []}
 
     try:
         return json.loads(match.group())
     except Exception:
-        return fallback
-
-
-def _empty_jd_attrs() -> dict:
-    return {
-        "additional_skills": [],
-        "tools": [],
-        "soft_skills": [],
-        "keywords": []
-    }
+        return {"explicit_requirements": [], "nice_to_have": []}

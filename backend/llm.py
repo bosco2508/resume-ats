@@ -14,7 +14,7 @@ MODEL_NAME = "models/gemini-flash-latest"
 
 def hr_evaluate(jd_text: str, resume_text: str) -> dict:
     """
-    Strict HR evaluation.
+    HR evaluation.
     Always returns a valid dict.
     """
 

@@ -51,10 +51,12 @@ with col1:
     )
 
 with col2:
-    mandatory_skills = st.text_input(
+    mandatory_skills_input = st.text_input(
         "Mandatory Skills (comma-separated)"
     )
-    mandatory_skills = [s.strip() for s in mandatory_skills.split(",") if s.strip()]
+    mandatory_skills = [
+        s.strip() for s in mandatory_skills_input.split(",") if s.strip()
+    ]
 
 st.subheader("JD Description (Responsibilities / Tools / Expectations)")
 jd_description = st.text_area(
@@ -134,92 +136,102 @@ if resume and st.button("Process Resume"):
             candidate_name = extract_candidate_name(resume_text)
 
             # -------------------------
-            # Experience Gate (Hard Rule)
+            # Fetch JD session data
             # -------------------------
-            total_exp = calculate_experience(resume_text)
-
             session_data = get_session(st.session_state.session_id)
             jd_data = session_data["jd"]
             derived_attrs = jd_data["derived_attributes"]
 
+            # -------------------------
+            # Experience (Soft Evaluation)
+            # -------------------------
+            total_exp = calculate_experience(resume_text)
+            experience_gap_reason = None
+
             if total_exp < jd_data["min_exp"]:
-                result = {
-                    "candidate_name": candidate_name,
-                    "experience": total_exp,
-                    "skill_match_pct": 0,
-                    "jd_alignment_pct": 0,
-                    "final_score": 0,
-                    "status": "Rejected",
-                    "rejection_reasons": [
-                        f"Minimum experience required: {jd_data['min_exp']} years, found: {total_exp}"
-                    ],
-                    "remarks": "Rejected at experience screening stage"
-                }
-
-            else:
-                # -------------------------
-                # Mandatory Skill Matching
-                # -------------------------
-                skill_pct, matched_skills = skill_match(
-                    jd_data["mandatory_skills"],
-                    resume_text
+                experience_gap_reason = (
+                    f"Experience below requirement: required "
+                    f"{jd_data['min_exp']} years, found {total_exp} years"
                 )
 
-                # -------------------------
-                # JD Attribute Matching
-                # -------------------------
-                jd_match_pct, jd_matched, jd_missing = match_jd_attributes(
-                    derived_attrs,
-                    resume_text
+            # -------------------------
+            # Mandatory Skill Matching
+            # -------------------------
+            skill_pct, matched_skills = skill_match(
+                jd_data["mandatory_skills"],
+                resume_text
+            )
+
+            # -------------------------
+            # JD Attribute Matching
+            # -------------------------
+            jd_match_pct, jd_matched, jd_missing = match_jd_attributes(
+                derived_attrs,
+                resume_text
+            )
+
+            # -------------------------
+            # Gemini HR Evaluation
+            # -------------------------
+            llm_eval = hr_evaluate(
+                jd_data["jd_description"],
+                resume_text
+            )
+
+            # -------------------------
+            # Final Scoring
+            # -------------------------
+            score = final_score(
+                experience_score=total_exp,
+                skill_score=skill_pct,
+                jd_score=jd_match_pct,
+                project_score=llm_eval["project_relevance_score"],
+                resume_quality=llm_eval["resume_quality_score"],
+                weights=weights
+            )
+
+            # -------------------------
+            # Rejection Reasons
+            # -------------------------
+            rejection_reasons = []
+
+            if experience_gap_reason:
+                rejection_reasons.append(experience_gap_reason)
+
+            if skill_pct < 50:
+                rejection_reasons.append(
+                    "Insufficient match on mandatory skills"
                 )
 
-                # -------------------------
-                # Gemini HR Evaluation
-                # -------------------------
-                llm_eval = hr_evaluate(
-                    jd_data["jd_description"],
-                    resume_text
+            if jd_match_pct < 40:
+                rejection_reasons.append(
+                    "Low alignment with job responsibilities"
                 )
 
-                # -------------------------
-                # Final Scoring
-                # -------------------------
-                score = final_score(
-                    experience_score=total_exp,
-                    skill_score=skill_pct,
-                    jd_score=jd_match_pct,
-                    project_score=llm_eval["project_relevance_score"],
-                    resume_quality=llm_eval["resume_quality_score"],
-                    weights=weights
+            for item in jd_missing[:3]:
+                rejection_reasons.append(
+                    f"Missing JD expectation: {item}"
                 )
 
-                # -------------------------
-                # JD-based rejection reasons
-                # -------------------------
-                jd_rejection_reasons = []
+            rejection_reasons.extend(llm_eval.get("rejection_reasons", []))
 
-                if jd_match_pct < 40:
-                    jd_rejection_reasons.append(
-                        "Resume does not sufficiently align with job responsibilities"
-                    )
-
-                for item in jd_missing[:3]:
-                    jd_rejection_reasons.append(
-                        f"Missing JD expectation: {item}"
-                    )
-
-                result = {
-                    "candidate_name": candidate_name,
-                    "experience": total_exp,
-                    "skill_match_pct": skill_pct,
-                    "jd_alignment_pct": jd_match_pct,
-                    "final_score": score,
-                    "status": "Selected" if score >= 70 else "Rejected",
-                    "rejection_reasons": (
-                        llm_eval["rejection_reasons"] + jd_rejection_reasons
-                    ),
-                    "remarks": llm_eval["remarks"]
-                }
+            # -------------------------
+            # Final Result Object (JSON)
+            # -------------------------
+            result = {
+                "candidate_name": candidate_name,
+                "experience_years": total_exp,
+                "experience_required": jd_data["min_exp"],
+                "experience_score_component": total_exp,
+                "skill_match_pct": skill_pct,
+                "jd_alignment_pct": jd_match_pct,
+                "project_relevance_score": llm_eval["project_relevance_score"],
+                "resume_quality_score": llm_eval["resume_quality_score"],
+                "final_score": round(score, 2),
+                "status": "Selected" if score >= 70 else "Rejected",
+                "rejection_reasons": rejection_reasons,
+                "remarks": llm_eval["remarks"]
+            }
 
             append_result(st.session_state.session_id, result)
 

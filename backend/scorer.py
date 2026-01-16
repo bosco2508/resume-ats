@@ -1,18 +1,14 @@
-def final_score(
-    experience_score: float,
-    skill_score: float,
-    jd_score: float,
-    project_score: float,
-    resume_quality: float,
-    weights: dict
-) -> float:
+import pdfplumber
+import docx
 
-    score = (
-        experience_score * weights["experience"] +
-        skill_score * weights["skills"] +
-        jd_score * weights.get("jd_alignment", 0.15) +
-        project_score * weights["projects"] +
-        resume_quality * weights["resume_quality"]
-    )
+def extract_text(file) -> str:
+    if file.name.endswith(".pdf"):
+        with pdfplumber.open(file) as pdf:
+            return "\n".join(p.page.extract_text() or "" for p in pdf.pages)
+    else:
+        doc = docx.Document(file)
+        return "\n".join(p.text for p in doc.paragraphs)
 
-    return round(score, 2)
+def extract_candidate_name(text: str) -> str:
+    lines = text.splitlines()
+    return lines[0].strip() if lines else "Unknown"

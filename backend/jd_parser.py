@@ -6,30 +6,45 @@ import re
 client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 MODEL_NAME = "models/gemini-flash-latest"
 
+FORBIDDEN_WORDS = {
+    "expert", "advanced", "strong", "proficient",
+    "senior", "mastery", "highly skilled"
+}
 
-def extract_jd_attributes(jd_description: str) -> dict:
-    if not jd_description or not jd_description.strip():
-        return {
-            "explicit_requirements": [],
-            "nice_to_have": []
-        }
+
+def extract_jd_attributes(
+    jd_description: str,
+    role: str,
+    mandatory_skills: list[str]
+) -> dict:
+    """
+    Extract ONLY literal JD requirements.
+    No skill inflation. No inferred seniority.
+    """
 
     prompt = f"""
-Extract requirements from the Job Description.
+Extract ONLY explicitly written requirements.
 
-RULES:
-- ONLY include items EXPLICITLY mentioned in the JD under explicit_requirements
-- If something is implied but NOT written, put it under nice_to_have
-- DO NOT invent buzzwords
-- DO NOT generalize
+STRICT RULES:
+- DO NOT add seniority or expertise adjectives
+- DO NOT infer skills from role
+- DO NOT upgrade skill levels
+- Preserve exact JD wording where possible
+
+Role:
+{role}
+
+Mandatory Skills (must be kept EXACT):
+{mandatory_skills}
 
 JD:
 {jd_description}
 
-Return ONLY valid JSON:
+Return ONLY JSON:
 {{
   "explicit_requirements": ["string"],
-  "nice_to_have": ["string"]
+  "role_keywords": ["string"],
+  "mandatory_skills": ["string"]
 }}
 """
 
@@ -38,20 +53,27 @@ Return ONLY valid JSON:
         contents=prompt
     )
 
-    return _safe_json_parse(response.text)
+    data = _safe_json_parse(response.text)
+
+    # Remove forbidden adjectives
+    explicit_cleaned = []
+    for item in data.get("explicit_requirements", []):
+        if not any(w in item.lower() for w in FORBIDDEN_WORDS):
+            explicit_cleaned.append(item)
+
+    return {
+        "explicit_requirements": explicit_cleaned,
+        "role_keywords": data.get("role_keywords", []),
+        "mandatory_skills": mandatory_skills
+    }
 
 
 def _safe_json_parse(text: str) -> dict:
-    if not text:
-        return {"explicit_requirements": [], "nice_to_have": []}
-
-    text = re.sub(r"```(?:json)?|```", "", text, flags=re.IGNORECASE).strip()
+    text = re.sub(r"```(?:json)?|```", "", text, flags=re.I).strip()
     match = re.search(r"\{.*\}", text, re.DOTALL)
-
     if not match:
-        return {"explicit_requirements": [], "nice_to_have": []}
-
+        return {}
     try:
         return json.loads(match.group())
     except Exception:
-        return {"explicit_requirements": [], "nice_to_have": []}
+        return {}

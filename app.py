@@ -1,92 +1,48 @@
 import streamlit as st
 
-# -------------------------
-# Backend imports
-# -------------------------
 from backend.parser import extract_text, extract_candidate_name
 from backend.experience import calculate_experience
 from backend.skills import skill_match
 from backend.llm import hr_evaluate
 from backend.jd_parser import extract_jd_attributes
 from backend.vector_matcher import semantic_jd_alignment
-from backend.scorer import final_score
+from backend.scorer import final_score, normalize_weights
 from backend.firebase_db import (
-    create_session,
-    append_result,
-    get_session,
-    clear_session
+    create_session, append_result, get_session, clear_session
 )
 from backend.exporter import export_excel
 
-# -------------------------
-# Page Config
-# -------------------------
-st.set_page_config(
-    page_title="GenAI Resume Screener",
-    layout="wide"
-)
+st.set_page_config(page_title="GenAI Resume Screener", layout="wide")
+st.title("GenAI Resume Screener – Strict ATS Mode")
 
-st.title("GenAI Resume Screener – Semantic HR Mode")
-
-# -------------------------
-# Session State
-# -------------------------
 if "session_id" not in st.session_state:
     st.session_state.session_id = None
 
-# ======================================================
-# JOB DESCRIPTION INPUT
-# ======================================================
+# ---------------- JD INPUT ----------------
 st.header("Job Description")
 
 col1, col2 = st.columns(2)
 
 with col1:
     role = st.text_input("Role / Position")
-    min_exp = st.number_input(
-        "Minimum Experience (Years)",
-        min_value=0.0,
-        max_value=30.0,
-        step=0.5
-    )
+    min_exp = st.number_input("Minimum Experience (Years)", 0.0, 30.0, 0.0, 0.5)
 
 with col2:
-    mandatory_skills_input = st.text_input(
-        "Mandatory Skills (comma-separated)"
-    )
-    mandatory_skills = [
-        s.strip() for s in mandatory_skills_input.split(",") if s.strip()
-    ]
+    skills_input = st.text_input("Mandatory Skills (comma-separated)")
+    mandatory_skills = [s.strip() for s in skills_input.split(",") if s.strip()]
 
-st.subheader("JD Description (Responsibilities / Tools / Expectations)")
-jd_description = st.text_area(
-    "Only explicitly written requirements will be enforced",
-    height=180
-)
+jd_description = st.text_area("JD Description", height=180)
 
-# ======================================================
-# SCORING WEIGHTS
-# ======================================================
-st.header("Scoring Weights")
+# ---------------- WEIGHTS ----------------
+st.header("Scoring Priority (HR Controlled)")
 
-w1, w2, w3, w4, w5 = st.columns(5)
+exp_w = st.slider("Experience", 0.0, 1.0, 0.3)
+skill_w = st.slider("Mandatory Skills", 0.0, 1.0, 0.35)
+jd_w = st.slider("JD Alignment", 0.0, 1.0, 0.15)
+proj_w = st.slider("Projects", 0.0, 1.0, 0.1)
+qual_w = st.slider("Resume Quality", 0.0, 1.0, 0.1)
 
-with w1:
-    exp_w = st.slider("Experience", 0.0, 1.0, 0.30)
-
-with w2:
-    skill_w = st.slider("Mandatory Skills", 0.0, 1.0, 0.35)
-
-with w3:
-    jd_w = st.slider("JD Alignment (Semantic)", 0.0, 1.0, 0.15)
-
-with w4:
-    proj_w = st.slider("Projects", 0.0, 1.0, 0.10)
-
-with w5:
-    qual_w = st.slider("Resume Quality", 0.0, 1.0, 0.10)
-
-weights = {
+weights_ui = {
     "experience": exp_w,
     "skills": skill_w,
     "jd_alignment": jd_w,
@@ -94,15 +50,20 @@ weights = {
     "resume_quality": qual_w
 }
 
-# ======================================================
-# START SESSION
-# ======================================================
+# ---------------- START SESSION ----------------
 if st.button("Start Screening Session"):
     if not role or not mandatory_skills:
         st.error("Role and Mandatory Skills are required.")
     else:
-        with st.spinner("Extracting explicit JD requirements..."):
-            derived_attrs = extract_jd_attributes(jd_description)
+        try:
+            weights = normalize_weights(weights_ui)
+        except ValueError as e:
+            st.error(str(e))
+            st.stop()
+
+        derived_attrs = extract_jd_attributes(
+            jd_description, role, mandatory_skills
+        )
 
         st.session_state.session_id = create_session(
             jd={
@@ -115,160 +76,60 @@ if st.button("Start Screening Session"):
             weights=weights
         )
 
-        st.success("Screening session started successfully.")
+        st.success("Screening session started")
+        st.info(f"Applied weights: {weights}")
 
-# ======================================================
-# RESUME UPLOAD & PROCESSING
-# ======================================================
+# ---------------- RESUME PROCESS ----------------
 st.header("Resume Screening")
 
-resume = st.file_uploader(
-    "Upload Resume (PDF or DOCX)",
-    type=["pdf", "docx"]
-)
+resume = st.file_uploader("Upload Resume", type=["pdf", "docx"])
 
 if resume and st.button("Process Resume"):
-    if not st.session_state.session_id:
-        st.error("Please start a screening session first.")
-    else:
-        with st.spinner("Processing resume..."):
-            # -------------------------
-            # Load session data
-            # -------------------------
-            session_data = get_session(st.session_state.session_id)
-            jd_data = session_data["jd"]
-            derived_attrs = jd_data["derived_attributes"]
+    session = get_session(st.session_state.session_id)
+    jd_data = session["jd"]
+    weights = session["weights"]
 
-            explicit_requirements = derived_attrs.get(
-                "explicit_requirements", []
-            )
+    resume_text = extract_text(resume)
+    name = extract_candidate_name(resume_text)
+    exp = calculate_experience(resume_text)
 
-            # -------------------------
-            # Resume parsing
-            # -------------------------
-            resume_text = extract_text(resume)
-            candidate_name = extract_candidate_name(resume_text)
+    skill_pct, _ = skill_match(jd_data["mandatory_skills"], resume_text)
 
-            # -------------------------
-            # Experience (soft factor)
-            # -------------------------
-            total_exp = calculate_experience(resume_text)
-            experience_gap_reason = None
+    jd_pct, _, jd_missing = semantic_jd_alignment(
+        jd_data["derived_attributes"], resume_text
+    )
 
-            if total_exp < jd_data["min_exp"]:
-                experience_gap_reason = (
-                    f"Experience below requirement: "
-                    f"required {jd_data['min_exp']} years, "
-                    f"found {total_exp} years"
-                )
+    llm_eval = hr_evaluate(jd_data["jd_description"], resume_text)
 
-            # -------------------------
-            # Mandatory skill matching
-            # -------------------------
-            skill_pct, _ = skill_match(
-                jd_data["mandatory_skills"],
-                resume_text
-            )
+    score = final_score(
+        exp, skill_pct, jd_pct,
+        llm_eval["project_relevance_score"],
+        llm_eval["resume_quality_score"],
+        weights
+    )
 
-            # -------------------------
-            # Semantic JD alignment (EMBEDDINGS)
-            # -------------------------
-            jd_match_pct, jd_matched, jd_missing = semantic_jd_alignment(
-                explicit_requirements,
-                resume_text
-            )
+    result = {
+        "candidate_name": name,
+        "experience_years": exp,
+        "skill_match_pct": skill_pct,
+        "jd_alignment_pct": jd_pct,
+        "project_relevance_score": llm_eval["project_relevance_score"],
+        "resume_quality_score": llm_eval["resume_quality_score"],
+        "final_score": score,
+        "status": "Selected" if score >= 70 else "Rejected",
+        "rejection_reasons": jd_missing[:3],
+        "remarks": llm_eval["remarks"]
+    }
 
-            # -------------------------
-            # LLM HR evaluation
-            # -------------------------
-            llm_eval = hr_evaluate(
-                jd_data["jd_description"],
-                resume_text
-            )
+    append_result(st.session_state.session_id, result)
+    st.json(result)
 
-            # -------------------------
-            # Final score
-            # -------------------------
-            score = final_score(
-                experience_score=total_exp,
-                skill_score=skill_pct,
-                jd_score=jd_match_pct,
-                project_score=llm_eval["project_relevance_score"],
-                resume_quality=llm_eval["resume_quality_score"],
-                weights=weights
-            )
-
-            # -------------------------
-            # Rejection reasons (EXPLICIT ONLY)
-            # -------------------------
-            rejection_reasons = []
-
-            if experience_gap_reason:
-                rejection_reasons.append(experience_gap_reason)
-
-            if skill_pct < 50:
-                rejection_reasons.append(
-                    "Insufficient match on mandatory skills"
-                )
-
-            if jd_match_pct < 40:
-                rejection_reasons.append(
-                    "Low semantic alignment with job responsibilities"
-                )
-
-            for item in jd_missing[:3]:
-                rejection_reasons.append(
-                    f"Missing explicit JD requirement: {item}"
-                )
-
-            rejection_reasons.extend(
-                llm_eval.get("rejection_reasons", [])
-            )
-
-            # -------------------------
-            # Final result JSON
-            # -------------------------
-            result = {
-                "candidate_name": candidate_name,
-                "experience_years": total_exp,
-                "experience_required": jd_data["min_exp"],
-                "skill_match_pct": round(skill_pct, 2),
-                "jd_alignment_pct": round(jd_match_pct, 2),
-                "project_relevance_score": llm_eval["project_relevance_score"],
-                "resume_quality_score": llm_eval["resume_quality_score"],
-                "final_score": round(score, 2),
-                "status": "Selected" if score >= 70 else "Rejected",
-                "rejection_reasons": rejection_reasons,
-                "remarks": llm_eval["remarks"]
-            }
-
-            append_result(st.session_state.session_id, result)
-
-        st.subheader("Screening Result")
-        st.json(result)
-
-# ======================================================
-# DOWNLOAD RESULTS
-# ======================================================
+# ---------------- EXPORT ----------------
 st.header("Finalize Session")
 
-if st.button("Download Excel & Clear Session"):
-    if not st.session_state.session_id:
-        st.warning("No active session.")
-    else:
-        session_data = get_session(st.session_state.session_id)
-        results = session_data.get("results", [])
-
-        if not results:
-            st.warning("No resumes processed.")
-        else:
-            file_path = export_excel(results)
-            st.download_button(
-                label="Download Results (Excel)",
-                data=open(file_path, "rb"),
-                file_name="resume_screening_results.xlsx"
-            )
-
-            clear_session(st.session_state.session_id)
-            st.session_state.session_id = None
-            st.success("Session cleared successfully.")
+if st.button("Download Excel & Clear"):
+    session = get_session(st.session_state.session_id)
+    path = export_excel(session["results"])
+    st.download_button("Download Excel", open(path, "rb"), "results.xlsx")
+    clear_session(st.session_state.session_id)
+    st.session_state.session_id = None

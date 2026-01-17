@@ -1,79 +1,43 @@
-from google import genai
-import json
-import os
 import re
-
-client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
-MODEL_NAME = "models/gemini-flash-latest"
-
-FORBIDDEN_WORDS = {
-    "expert", "advanced", "strong", "proficient",
-    "senior", "mastery", "highly skilled"
-}
+from collections import Counter
 
 
-def extract_jd_attributes(
+def extract_weighted_keywords(
     jd_description: str,
     role: str,
     mandatory_skills: list[str]
 ) -> dict:
     """
-    Extract ONLY literal JD requirements.
-    No skill inflation. No inferred seniority.
+    Extract keywords from Job Title + JD with frequency & priority.
     """
 
-    prompt = f"""
-Extract ONLY explicitly written requirements.
+    text = f"{role} {jd_description}".lower()
 
-STRICT RULES:
-- DO NOT add seniority or expertise adjectives
-- DO NOT infer skills from role
-- DO NOT upgrade skill levels
-- Preserve exact JD wording where possible
+    tokens = re.findall(r"[a-zA-Z][a-zA-Z0-9\+\#\.]*", text)
 
-Role:
-{role}
-
-Mandatory Skills (must be kept EXACT):
-{mandatory_skills}
-
-JD:
-{jd_description}
-
-Return ONLY JSON:
-{{
-  "explicit_requirements": ["string"],
-  "role_keywords": ["string"],
-  "mandatory_skills": ["string"]
-}}
-"""
-
-    response = client.models.generate_content(
-        model=MODEL_NAME,
-        contents=prompt
-    )
-
-    data = _safe_json_parse(response.text)
-
-    # Remove forbidden adjectives
-    explicit_cleaned = []
-    for item in data.get("explicit_requirements", []):
-        if not any(w in item.lower() for w in FORBIDDEN_WORDS):
-            explicit_cleaned.append(item)
-
-    return {
-        "explicit_requirements": explicit_cleaned,
-        "role_keywords": data.get("role_keywords", []),
-        "mandatory_skills": mandatory_skills
+    stopwords = {
+        "and", "or", "with", "to", "for", "of", "in", "on",
+        "the", "a", "an", "is", "are", "will", "should"
     }
 
+    tokens = [t for t in tokens if t not in stopwords]
+    freq = Counter(tokens)
 
-def _safe_json_parse(text: str) -> dict:
-    text = re.sub(r"```(?:json)?|```", "", text, flags=re.I).strip()
-    match = re.search(r"\{.*\}", text, re.DOTALL)
-    if not match:
-        return {}
-    try:
-        return json.loads(match.group())
-    except Exception:
-        return {}
+    keyword_weights = {}
+
+    # Mandatory skills → highest weight
+    for skill in mandatory_skills:
+        keyword_weights[skill.lower()] = {
+            "weight": 3.0,
+            "freq": freq.get(skill.lower(), 1)
+        }
+
+    # JD + Role keywords
+    for token, count in freq.items():
+        if token not in keyword_weights:
+            keyword_weights[token] = {
+                "weight": 1.0,
+                "freq": count
+            }
+
+    return keyword_weights
